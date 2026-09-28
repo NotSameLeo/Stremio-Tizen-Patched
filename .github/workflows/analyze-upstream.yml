@@ -1,0 +1,77 @@
+name: Analyze upstream Stremio Tizen 4
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/analyze-upstream.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patch repository
+        uses: actions/checkout@v4
+
+      - name: Download exact Apps2Samsung Stremio Tizen 4 package
+        run: |
+          set -euxo pipefail
+          mkdir -p work/extracted analysis/upstream
+          curl -fL --retry 3             "https://raw.githubusercontent.com/Apps2Samsung/tizen-community-packages/main/apps/Stremio.wgt"             -o work/Stremio.wgt
+          sha256sum work/Stremio.wgt | tee analysis/UPSTREAM_SHA256.txt
+          unzip -t work/Stremio.wgt
+          unzip -q work/Stremio.wgt -d work/extracted
+
+      - name: Preserve real package sources for inspection
+        run: |
+          set -euxo pipefail
+          cp work/extracted/config.xml analysis/upstream/config.xml
+          cp work/extracted/index.html analysis/upstream/index.html
+          cp work/extracted/bundle.js analysis/upstream/bundle.js
+          find work/extracted -maxdepth 2 -type f -printf '%P\n' | sort > analysis/PACKAGE_FILES.txt
+
+      - name: Analyze compatibility-sensitive code
+        run: |
+          set -euxo pipefail
+          {
+            echo "# Stremio Tizen 4 upstream analysis"
+            echo
+            echo "## Package"
+            cat analysis/UPSTREAM_SHA256.txt
+            echo
+            echo "## Relevant occurrences"
+            for term in 'webapis.avplay' 'avplay' '127.0.0.1' '11470' '12470' 'hlsv2' '/tracks' 'mediaURL' 'streamingServer' 'streaming server' 'm3u8' 'language' 'locale' 'i18n'; do
+              echo
+              echo "### $term"
+              grep -n -i -F "$term" work/extracted/bundle.js | head -n 80 || true
+            done
+            echo
+            echo "## config.xml"
+            cat work/extracted/config.xml
+          } > analysis/REPORT.md
+
+      - name: Commit extracted upstream code and report
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add analysis
+          if git diff --cached --quiet; then
+            echo "No analysis changes to commit."
+          else
+            git commit -m "Analyze upstream Apps2Samsung Stremio WGT"
+            git push
+          fi
+
+      - name: Upload original WGT and analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: stremio-tizen4-upstream-analysis
+          path: |
+            work/Stremio.wgt
+            analysis/
+          if-no-files-found: error
