@@ -1,11 +1,11 @@
 name: Analyze upstream Stremio Tizen 4
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
       - ".github/workflows/analyze-upstream.yml"
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,62 +16,85 @@ jobs:
     steps:
       - name: Checkout patch repository
         uses: actions/checkout@v4
+        with:
+          path: patchrepo
 
-      - name: Download exact Apps2Samsung Stremio Tizen 4 package
+      - name: Checkout Apps2Samsung package repository
+        uses: actions/checkout@v4
+        with:
+          repository: Apps2Samsung/tizen-community-packages
+          ref: main
+          path: upstream
+
+      - name: Extract exact upstream WGT
+        shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p work/extracted analysis/upstream
-          curl -fL --retry 3             "https://raw.githubusercontent.com/Apps2Samsung/tizen-community-packages/main/apps/Stremio.wgt"             -o work/Stremio.wgt
-          sha256sum work/Stremio.wgt | tee analysis/UPSTREAM_SHA256.txt
-          unzip -t work/Stremio.wgt
+          mkdir -p work/extracted patchrepo/analysis/upstream
+          cp upstream/apps/Stremio.wgt work/Stremio.wgt
+          sha256sum work/Stremio.wgt | tee patchrepo/analysis/UPSTREAM_SHA256.txt
+          unzip -t work/Stremio.wgt | tee patchrepo/analysis/UNZIP_TEST.txt
           unzip -q work/Stremio.wgt -d work/extracted
+          find work/extracted -type f -printf '%P\n' | sort | tee patchrepo/analysis/PACKAGE_FILES.txt
 
-      - name: Preserve real package sources for inspection
+      - name: Locate and preserve actual package files
+        shell: bash
         run: |
           set -euxo pipefail
-          cp work/extracted/config.xml analysis/upstream/config.xml
-          cp work/extracted/index.html analysis/upstream/index.html
-          cp work/extracted/bundle.js analysis/upstream/bundle.js
-          find work/extracted -maxdepth 2 -type f -printf '%P\n' | sort > analysis/PACKAGE_FILES.txt
+          CONFIG="$(find work/extracted -type f -name config.xml -print -quit)"
+          INDEX="$(find work/extracted -type f -name index.html -print -quit)"
+          BUNDLE="$(find work/extracted -type f -name bundle.js -print -quit)"
+          printf 'CONFIG=%s\nINDEX=%s\nBUNDLE=%s\n' "$CONFIG" "$INDEX" "$BUNDLE" | tee patchrepo/analysis/LOCATIONS.txt
+          test -n "$CONFIG"
+          test -n "$INDEX"
+          test -n "$BUNDLE"
+          cp "$CONFIG" patchrepo/analysis/upstream/config.xml
+          cp "$INDEX" patchrepo/analysis/upstream/index.html
+          cp "$BUNDLE" patchrepo/analysis/upstream/bundle.js
 
-      - name: Analyze compatibility-sensitive code
+      - name: Generate code report
+        shell: bash
         run: |
-          set -euxo pipefail
+          set -uo pipefail
+          BUNDLE="patchrepo/analysis/upstream/bundle.js"
           {
             echo "# Stremio Tizen 4 upstream analysis"
             echo
-            echo "## Package"
-            cat analysis/UPSTREAM_SHA256.txt
+            echo "## Package SHA-256"
+            cat patchrepo/analysis/UPSTREAM_SHA256.txt
             echo
-            echo "## Relevant occurrences"
+            echo "## Compatibility-sensitive occurrences"
             for term in 'webapis.avplay' 'avplay' '127.0.0.1' '11470' '12470' 'hlsv2' '/tracks' 'mediaURL' 'streamingServer' 'streaming server' 'm3u8' 'language' 'locale' 'i18n'; do
               echo
               echo "### $term"
-              grep -n -i -F "$term" work/extracted/bundle.js | head -n 80 || true
+              grep -n -i -F "$term" "$BUNDLE" | head -n 100 || true
             done
             echo
             echo "## config.xml"
-            cat work/extracted/config.xml
-          } > analysis/REPORT.md
+            cat patchrepo/analysis/upstream/config.xml
+          } > patchrepo/analysis/REPORT.md
 
-      - name: Commit extracted upstream code and report
+      - name: Commit analysis to main
+        shell: bash
+        working-directory: patchrepo
         run: |
           set -euxo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add analysis
           if git diff --cached --quiet; then
-            echo "No analysis changes to commit."
+            echo "No analysis changes."
           else
-            git commit -m "Analyze upstream Apps2Samsung Stremio WGT"
+            git commit -m "Analyze real Apps2Samsung Stremio Tizen 4 package"
             git push
           fi
 
-      - name: Upload original WGT and analysis
+      - name: Upload diagnostic artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stremio-tizen4-upstream-analysis
+          name: stremio-tizen4-analysis
           path: |
-            work/Stremio.wgt
-            analysis/
-          if-no-files-found: error
+            work/
+            patchrepo/analysis/
+          if-no-files-found: warn
